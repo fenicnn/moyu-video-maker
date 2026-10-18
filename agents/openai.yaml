@@ -1,0 +1,8 @@
+interface:
+  display_name: "Moyu Video Maker"
+  short_description: "从视频或链接生成 Moyu 三文件英语学习素材"
+  brand_color: "#6C63FF"
+  default_prompt: "Use $moyu-video-maker to turn this video or public link into a strict MP4, highlighted bilingual SRT, and vocabulary JSON deliverable."
+
+policy:
+  allow_implicit_invocation: true
