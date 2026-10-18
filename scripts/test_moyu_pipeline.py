@@ -34,14 +34,27 @@ class PipelineTests(unittest.TestCase):
             ],
         )
 
-    def test_builds_released_client_v1_ids_and_optional_v2(self):
+    def test_builds_cue_index_vocabulary_and_prompt(self):
         cues = PIPELINE.parse_highlighted_srt(SAMPLE)
-        v1, _ = PIPELINE.build_vocabulary_payload(cues, 1)
-        v2, _ = PIPELINE.build_vocabulary_payload(cues, 2)
-        self.assertEqual(v1["vocabulary"][0]["id"], "cue-1-000001000-term-0")
-        self.assertNotIn("cueIndex", v1["vocabulary"][0])
-        self.assertEqual(v2["vocabulary"][0]["cueIndex"], 1)
-        self.assertNotIn("id", v2["vocabulary"][0])
+        payload, items = PIPELINE.build_vocabulary_payload(cues)
+        self.assertEqual(payload["schemaVersion"], 2)
+        self.assertEqual(payload["vocabulary"][0]["cueIndex"], 1)
+        self.assertTrue(all("id" not in item for item in payload["vocabulary"]))
+        prompt = PIPELINE.build_gloss_prompt(items)
+        self.assertIn('"schemaVersion": 2', prompt)
+        self.assertIn('"cueIndex": 1', prompt)
+        self.assertNotIn('"id":', prompt)
+
+    def test_removed_legacy_cli_options_are_rejected(self):
+        for command in [
+            ["vocab", "--hl-srt", "unused.srt", "--output", "unused.json", "--schema", "1"],
+            ["vocab", "--hl-srt", "unused.srt", "--output", "unused.json", "--prompt-md", "old.md"],
+            ["finish", "--srt", "unused.srt", "--episode", "e01", "--schema", "1"],
+        ]:
+            with self.subTest(command=command):
+                result = subprocess.run([sys.executable, str(SCRIPT), *command], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("unrecognized arguments", result.stderr)
 
     def test_vocab_dry_run_does_not_write(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -50,8 +63,8 @@ class PipelineTests(unittest.TestCase):
             output = root / "result.json"
             source.write_text(SAMPLE, encoding="utf-8")
             result = PIPELINE.cmd_vocab(Namespace(
-                output=str(output), hl_srt=str(source), prompt_md=None,
-                schema=1, prompt_output=None, no_prompt=False,
+                output=str(output), hl_srt=str(source),
+                prompt_output=None, no_prompt=False,
                 force=False, dry_run=True,
             ))
             self.assertEqual(result, 0)

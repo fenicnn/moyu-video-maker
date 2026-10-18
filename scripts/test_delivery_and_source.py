@@ -71,6 +71,46 @@ class DeliveryTests(unittest.TestCase):
             vocab.write_text(json.dumps(VOCAB), encoding="utf-8")
             self.assertEqual(PUBLISH.validate_srt_and_vocab(srt, vocab), [])
 
+    def test_invalid_subtitles_are_rejected(self):
+        cases = [
+            SRT.replace("这是值得的。", ""),
+            SRT.replace("00:00:04,000", "00:00:00,500"),
+            SRT.replace("00:00:01,000", "00:60:01,000"),
+            SRT + "\n2\ninvalid timing\nHello\n你好\n",
+            SRT + "\n" + SRT,
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vocab = root / "lesson.json"
+            vocab.write_text(json.dumps(VOCAB))
+            for text in cases:
+                with self.subTest(text=text):
+                    srt = root / "lesson.srt"
+                    srt.write_text(text)
+                    self.assertTrue(PUBLISH.validate_srt_and_vocab(srt, vocab))
+
+    def test_video_duration_bounds(self):
+        self.assertEqual(PUBLISH.validate_timing(SRT, 4.0), [])
+        self.assertTrue(PUBLISH.validate_timing(SRT, 3.9))
+
+    def test_missing_ffprobe_blocks_delivery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "lesson.mp4"
+            video.write_bytes(b"placeholder")
+            with patch.object(PUBLISH.shutil, "which", return_value=None):
+                self.assertTrue(PUBLISH.validate_video(video))
+
+    def test_old_vocabulary_format_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt, vocab = root / "lesson.srt", root / "lesson.json"
+            srt.write_text(SRT)
+            vocab.write_text(json.dumps({"schemaVersion": 1, "vocabulary": [
+                {"id": "cue-1-000001000-term-0", "term": "worth it",
+                 "phonetic": "", "partOfSpeech": "phrase", "meaning": "值得"}
+            ]}))
+            self.assertTrue(PUBLISH.validate_srt_and_vocab(srt, vocab))
+
     def test_mapping_mismatch_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -88,9 +128,7 @@ class DeliveryTests(unittest.TestCase):
             root = Path(directory)
             for suffix in (".mp4", ".srt", ".json"):
                 (root / f"lesson{suffix}").write_bytes(b"x")
-            with patch.object(PUBLISH, "validate_video", return_value=[]), patch.object(
-                PUBLISH, "validate_srt_and_vocab", return_value=[]
-            ):
+            with patch.object(PUBLISH, "validate_bundle", return_value=[]):
                 self.assertEqual(PUBLISH.audit_directory(root, "lesson"), [])
                 (root / "extra.txt").write_text("not allowed")
                 self.assertTrue(PUBLISH.audit_directory(root, "lesson"))

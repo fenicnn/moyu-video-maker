@@ -261,7 +261,6 @@ def parse_highlighted_srt(text: str) -> list[dict]:
                 english.append(line)
         cues.append({
             "cueIndex": cue_index,
-            "startKey": "".join(timing.groups()[:4]),
             "start": f"{timing.group(1).zfill(2)}:{timing.group(2)}:{timing.group(3)}.{timing.group(4)}",
             "end": f"{timing.group(5).zfill(2)}:{timing.group(6)}:{timing.group(7)}.{timing.group(8)}",
             "english": " ".join(english),
@@ -617,15 +616,12 @@ def extract_terms_from_hl_srt(text: str) -> list[dict]:
     ]
 
 
-def build_vocabulary_payload(cues: list[dict], schema_version: int) -> tuple[dict, list[dict]]:
+def build_vocabulary_payload(cues: list[dict]) -> tuple[dict, list[dict]]:
     vocabulary: list[dict] = []
     prompt_items: list[dict] = []
     for cue in cues:
-        for term_index, term in enumerate(cue["terms"]):
-            identity = (
-                {"id": f"cue-{cue['cueIndex']}-{cue['startKey']}-term-{term_index}"}
-                if schema_version == 1 else {"cueIndex": cue["cueIndex"]}
-            )
+        for term in cue["terms"]:
+            identity = {"cueIndex": cue["cueIndex"]}
             vocabulary.append({
                 **identity,
                 "term": term["term"],
@@ -642,24 +638,22 @@ def build_vocabulary_payload(cues: list[dict], schema_version: int) -> tuple[dic
                     "english": cue["english"], "chinese": cue["chinese"],
                 },
             })
-    return {"schemaVersion": schema_version, "vocabulary": vocabulary}, prompt_items
+    return {"schemaVersion": 2, "vocabulary": vocabulary}, prompt_items
 
 
-def build_gloss_prompt(schema_version: int, items: list[dict]) -> str:
-    identity = "id" if schema_version == 1 else "cueIndex"
-    identity_example = '"原样保留输入 id"' if schema_version == 1 else "62"
+def build_gloss_prompt(items: list[dict]) -> str:
     return f"""# Moyu Studio AI 词汇生成任务
 
 根据待处理词汇所在的双语字幕语境，填写简洁准确的英语学习信息。
 
 规则：
 1. 不新增、删除或重新排序词汇。
-2. 原样保留每项的 `{identity}` 和 `term`。
+2. 原样保留每项的 `cueIndex` 和 `term`。
 3. `phonetic` 使用常见 IPA；短语不适合标注时填空字符串。
 4. `partOfSpeech` 使用 `n.`、`v.`、`adj.`、`adv.` 或 `phrase`。
 5. `meaning` 填当前语境下简洁自然的中文释义，不能为空。
 6. 只输出合法 UTF-8 JSON，不要 Markdown 代码块或说明。
-7. 输出结构：{{"schemaVersion": {schema_version}, "vocabulary": [{{"{identity}": {identity_example}, "term": "原样保留", "phonetic": "", "partOfSpeech": "phrase", "meaning": "语境释义"}}]}}
+7. 输出结构：{{"schemaVersion": 2, "vocabulary": [{{"cueIndex": 62, "term": "原样保留", "phonetic": "", "partOfSpeech": "phrase", "meaning": "语境释义"}}]}}
 
 ## 待处理词汇
 
@@ -670,11 +664,7 @@ def build_gloss_prompt(schema_version: int, items: list[dict]) -> str:
 def cmd_vocab(args) -> int:
     """生成 moyu-ai-vocabulary.json 骨架（schemaVersion 2，cueIndex 格式）。
 
-    两种入口（优先 --hl-srt）：
-    - --hl-srt 高亮 SRT（推荐，finish 默认链路）：直接解析彩色标签提取
-      cueIndex + term，不依赖任何中间 prompt md。
-    - --prompt-md legacy 兼容：解析旧 prompt md（v1 cue-XX-XXX-term-N /
-      v2 cueIndex 双格式），仅为存量文件保留，新流程不再生成 prompt md。
+    从 --hl-srt 高亮 SRT 的彩色标签提取 cueIndex + term。
 
     注意：本命令不调用 AI，也不会自己写释义；phonetic/partOfSpeech/meaning
     由 AI 在骨架生成后按语境回填（规则见 SKILL.md）。
@@ -696,66 +686,9 @@ def cmd_vocab(args) -> int:
                 file=sys.stderr,
             )
             return 1
-        vocab, prompt_items = build_vocabulary_payload(cues, args.schema)
-    elif args.prompt_md:
-        # ---- legacy：从 prompt md 解析（存量文件兼容） ----
-        prompt_md = Path(args.prompt_md)
-        if not prompt_md.exists():
-            print(f"[vocab] prompt md 不存在: {prompt_md}", file=sys.stderr)
-            return 1
-        text = prompt_md.read_text(encoding="utf-8")
-        # 只在 "## 待处理词汇" 之后切段，避免误读规则模板里的占位示例
-        # （E02 教训：否则 "原样保留输入 term" 这类占位符会被当词条）
-        if "## 待处理词汇" in text:
-            text = text.split("## 待处理词汇", 1)[1]
-
-        pat_v2 = re.compile(
-            r'"cueIndex":\s*(\d+),\s*\n\s*"term": "([^"]+)"', re.DOTALL
-        )
-        pat_v1 = re.compile(
-            r'"id": "(cue-\d+-\d+-term-\d+)".*?'
-            r'"term": "([^"]+)".*?'
-            r'"color": "(#[0-9a-f]+)"',
-            re.DOTALL,
-        )
-        entries_v2 = pat_v2.findall(text)
-        entries_v1 = pat_v1.findall(text)
-
-        if entries_v2 and len(entries_v2) >= len(entries_v1):
-            vocab = {
-                "schemaVersion": 2,
-                "vocabulary": [
-                    {
-                        "cueIndex": int(cue_idx),
-                        "term": term,
-                        "phonetic": "",
-                        "partOfSpeech": "",
-                        "meaning": "",
-                    }
-                    for cue_idx, term in entries_v2
-                ],
-            }
-        elif entries_v1:
-            vocab = {
-                "schemaVersion": 1,
-                "vocabulary": [
-                    {
-                        "id": eid,
-                        "term": term,
-                        "color": color,
-                        "phonetic": "",
-                        "partOfSpeech": "",
-                        "meaning": "",
-                        "block": int(eid.split("-")[1]),
-                    }
-                    for eid, term, color in entries_v1
-                ],
-            }
-        else:
-            print("[vocab] prompt md 内未匹配到 entry（v1/v2 均无），检查格式", file=sys.stderr)
-            return 1
+        vocab, prompt_items = build_vocabulary_payload(cues)
     else:
-        print("[vocab] --hl-srt（推荐）或 --prompt-md（legacy）必填其一", file=sys.stderr)
+        print("[vocab] --hl-srt 必填", file=sys.stderr)
         return 1
 
     out_path = Path(args.output)
@@ -781,7 +714,7 @@ def cmd_vocab(args) -> int:
           f"schemaVersion {vocab['schemaVersion']}）")
     if prompt_path:
         prompt_path.parent.mkdir(parents=True, exist_ok=True)
-        prompt_path.write_text(build_gloss_prompt(vocab["schemaVersion"], prompt_items), encoding="utf-8")
+        prompt_path.write_text(build_gloss_prompt(prompt_items), encoding="utf-8")
         print(f"[vocab] ✓ AI 释义任务已写入 {prompt_path}")
     return 0
 
@@ -976,7 +909,6 @@ def _as_sub(args, extra: list[str]) -> argparse.Namespace:
         "dry_run": False,
         "output_dir": None,
         "force": False,
-        "schema": 2,
         "prompt_output": None,
         "no_prompt": False,
         "video_mode": "auto",
@@ -1058,19 +990,14 @@ def main():
     # vocab
     p_vb = sp.add_parser(
         "vocab",
-        help="从高亮 SRT 解析 cueIndex+term 生成 vocabulary.json（legacy: --prompt-md）",
+        help="从高亮 SRT 解析 cueIndex+term 生成 vocabulary.json",
     )
     p_vb.add_argument(
         "--hl-srt",
-        help="高亮 SRT 路径（推荐：直接解析彩色标签，提取 cueIndex + term）",
-    )
-    p_vb.add_argument(
-        "--prompt-md",
-        help="legacy：存量 prompt md 路径（v1/v2 双格式兼容，新流程不再生成 prompt md）",
+        help="高亮 SRT 路径（直接解析彩色标签，提取 cueIndex + term）",
+        required=True,
     )
     p_vb.add_argument("--output", required=True, help="moyu-ai-vocabulary.json 路径")
-    p_vb.add_argument("--schema", type=int, choices=[1, 2], default=2,
-                      help="Studio 导入格式；默认 2，旧客户端可显式选择 1")
     p_vb.add_argument("--prompt-output", help="AI 释义任务 md 路径")
     p_vb.add_argument("--no-prompt", action="store_true", help="只生成 JSON 骨架")
     p_vb.add_argument("--force", action="store_true")
@@ -1110,7 +1037,6 @@ def main():
     p_fin.add_argument("--transcode-mp4", action="store_true",
                        help="即使输入已是 MP4 也显式重编码（默认跳过）")
     p_fin.add_argument("--colors", default=DEFAULT_COLORS)
-    p_fin.add_argument("--schema", type=int, choices=[1, 2], default=2)
     p_fin.add_argument("--prompt-output")
     p_fin.add_argument("--no-prompt", action="store_true")
     p_fin.add_argument("--video-mode", choices=["auto", "copy", "hevc"], default="auto")
