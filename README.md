@@ -133,6 +133,7 @@ python3 scripts/ensure_canonical_mp4.py --help
 
 ## 已制作资源
 
-| 资源名称      | 下载链接                                                             | 提取码    |
-| --------- | ---------------------------------------------------------------- | ------ |
-| Ariannita | [百度网盘](https://pan.baidu.com/s/1wXP5c7IvlcDUKjvGzh746Q?pwd=ftv1) | `ftv1` |
+| 资源名称     | 下载链接                                                     | 提取码 |
+| ------------ | ------------------------------------------------------------ | ------ |
+| EnglishVideo | [百度网盘](https://pan.baidu.com/s/1Wzw3nbXcc9SM9NiObVrzRg?pwd=fe44) | fe44   |
+
